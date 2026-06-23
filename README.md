@@ -36,6 +36,8 @@ python bubble_backtest.py \
   --csv AXSUSDT_2026-06-19_2026-06-20_1h.csv \
   --vol-lookback 10 \
   --vol-spike-mult 3.0 \
+  --avoid-recent-red-spike-bars 2 \
+  --red-spike-mult 3.0 \
   --hard-stop-pct 0.04 \
   --trailing-stop-pct 0.05 \
   --vol-decay-ratio 1.3 \
@@ -47,6 +49,10 @@ python bubble_backtest.py \
 ```
 
 Use `--allow-red-signal` para permitir entradas em candles de sinal vermelhos. Sem essa opção, a entrada exige candle de alta (`close > open`).
+
+Por padrão, o script também bloqueia novas compras quando houve spike de volume em candle vermelho nos 2 candles anteriores ao sinal. Esse filtro tenta evitar repiques comprados logo após uma liquidação de alto volume, como no evento perdedor de janeiro. Use `--avoid-recent-red-spike-bars 0` para desativar o filtro ou ajuste `--red-spike-mult` para mudar o múltiplo mínimo de volume relativo considerado spike vermelho.
+
+Use `--diagnose` para imprimir, além do relatório padrão, os candles de sinal e de saída de cada operação. Essa opção ajuda a explicar por que um evento foi vencedor ou perdedor.
 
 ## Colunas esperadas no CSV
 

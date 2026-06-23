@@ -29,6 +29,8 @@ class BubbleConfig:
 
     vol_lookback: int = 10
     vol_spike_mult: float = 3.0
+    avoid_recent_red_spike_bars: int = 2
+    red_spike_mult: float = 3.0
     require_green_signal: bool = True
     hard_stop_pct: float = 0.04
     trailing_stop_pct: float = 0.05
@@ -45,6 +47,10 @@ class BubbleConfig:
             raise ValueError("vol_lookback deve ser >= 1")
         if self.vol_spike_mult <= 0:
             raise ValueError("vol_spike_mult deve ser > 0")
+        if self.avoid_recent_red_spike_bars < 0:
+            raise ValueError("avoid_recent_red_spike_bars deve ser >= 0")
+        if self.red_spike_mult <= 0:
+            raise ValueError("red_spike_mult deve ser > 0")
         if not 0 <= self.hard_stop_pct < 1:
             raise ValueError("hard_stop_pct deve estar em [0, 1)")
         if not 0 <= self.trailing_stop_pct < 1:
@@ -116,6 +122,22 @@ def entry_signal(signal_bar: Bar, cfg: BubbleConfig) -> bool:
     return bool(has_volume_spike and has_required_color)
 
 
+def has_recent_red_volume_spike(bars: List[Bar], signal_idx: int, cfg: BubbleConfig) -> bool:
+    """Bloqueia entrada após spike de volume em candle vermelho recente."""
+    if cfg.avoid_recent_red_spike_bars == 0:
+        return False
+
+    start_idx = max(0, signal_idx - cfg.avoid_recent_red_spike_bars)
+    for bar in bars[start_idx:signal_idx]:
+        vol_ratio = bar.get("vol_ratio")
+        if vol_ratio is None:
+            continue
+        is_red = bar["close"] < bar["open"]
+        if is_red and vol_ratio >= cfg.red_spike_mult:
+            return True
+    return False
+
+
 def exit_signal(
     signal_bar: Bar,
     entry_price: float,
@@ -170,7 +192,8 @@ class BubbleBacktester:
             if not in_pos:
                 if i <= cooldown_until:
                     continue
-                if entry_signal(prev, cfg):
+                signal_idx = i - 1
+                if entry_signal(prev, cfg) and not has_recent_red_volume_spike(bars, signal_idx, cfg):
                     in_pos = True
                     entry_idx = i
                     entry_price = row["open"]
@@ -195,6 +218,11 @@ class BubbleBacktester:
 
             self.trades.append(
                 dict(
+                    signal_time=bars[entry_idx - 1][time_col],
+                    signal_close=bars[entry_idx - 1]["close"],
+                    signal_volume=bars[entry_idx - 1]["volume"],
+                    signal_vol_ma=bars[entry_idx - 1]["vol_ma"],
+                    signal_vol_ratio=bars[entry_idx - 1]["vol_ratio"],
                     entry_time=bars[entry_idx][time_col],
                     exit_time=row[time_col],
                     entry_price=entry_price,
@@ -205,6 +233,8 @@ class BubbleBacktester:
                     pnl=pnl,
                     capital_after=capital,
                     exit_reason=reason,
+                    entry_idx=entry_idx,
+                    exit_idx=i,
                 )
             )
             self.equity_curve.append(dict(time=row[time_col], capital=capital))
@@ -271,6 +301,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="bubble_backtest_trades.csv", help="CSV de saída com trades fechados")
     parser.add_argument("--vol-lookback", type=int, default=10)
     parser.add_argument("--vol-spike-mult", type=float, default=3.0)
+    parser.add_argument(
+        "--avoid-recent-red-spike-bars",
+        type=int,
+        default=2,
+        help="Bloqueia entrada se houve spike de volume em candle vermelho nos N candles anteriores; use 0 para desativar",
+    )
+    parser.add_argument(
+        "--red-spike-mult",
+        type=float,
+        default=3.0,
+        help="Múltiplo mínimo de volume relativo para classificar um candle vermelho recente como spike de risco",
+    )
     parser.add_argument("--allow-red-signal", action="store_true", help="Não exige candle de alta para entrada")
     parser.add_argument("--hard-stop-pct", type=float, default=0.04)
     parser.add_argument("--trailing-stop-pct", type=float, default=0.05)
@@ -280,6 +322,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fee-pct", type=float, default=0.001)
     parser.add_argument("--capital-inicial", type=float, default=1000.0)
     parser.add_argument("--position-size-pct", type=float, default=1.0)
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Mostra contexto candle a candle para explicar trades vencedores/perdedores",
+    )
     return parser.parse_args()
 
 
@@ -288,6 +335,8 @@ def build_config(args: argparse.Namespace) -> BubbleConfig:
     return BubbleConfig(
         vol_lookback=args.vol_lookback,
         vol_spike_mult=args.vol_spike_mult,
+        avoid_recent_red_spike_bars=args.avoid_recent_red_spike_bars,
+        red_spike_mult=args.red_spike_mult,
         require_green_signal=not args.allow_red_signal,
         hard_stop_pct=args.hard_stop_pct,
         trailing_stop_pct=args.trailing_stop_pct,
@@ -316,6 +365,7 @@ def print_report(bt: BubbleBacktester, trades: List[Trade]) -> None:
     print("=" * 80)
     if trades:
         cols = [
+            "signal_time",
             "entry_time",
             "exit_time",
             "entry_price",
@@ -323,6 +373,7 @@ def print_report(bt: BubbleBacktester, trades: List[Trade]) -> None:
             "bars_held",
             "gross_ret_pct",
             "net_ret_pct",
+            "signal_vol_ratio",
             "exit_reason",
         ]
         print(" | ".join(cols))
@@ -336,6 +387,41 @@ def print_report(bt: BubbleBacktester, trades: List[Trade]) -> None:
     print("=" * 80)
     for key, value in bt.summary().items():
         print(f"{key}: {value}")
+
+
+def print_diagnostics(bt: BubbleBacktester, time_col: str) -> None:
+    """Imprime o contexto dos candles que explicam cada operação."""
+    if not bt.trades:
+        return
+
+    print("\n" + "=" * 80)
+    print("DIAGNÓSTICO DOS TRADES")
+    print("=" * 80)
+    for number, trade in enumerate(bt.trades, start=1):
+        entry_idx = int(trade["entry_idx"])
+        exit_idx = int(trade["exit_idx"])
+        signal_bar = bt.data[entry_idx - 1]
+        exit_signal_bar = bt.data[exit_idx - 1]
+        print(f"Trade {number}: {trade['net_ret_pct']:.2f}% líquido, saída por {trade['exit_reason']}")
+        print(
+            "  Sinal: "
+            f"{format_value(signal_bar[time_col])}, "
+            f"close={signal_bar['close']:.4f}, "
+            f"volume={signal_bar['volume']:.2f}, "
+            f"vol_ratio={signal_bar['vol_ratio']:.2f}"
+        )
+        print(
+            "  Execução: "
+            f"entrada={format_value(trade['entry_time'])} @ {trade['entry_price']:.4f}; "
+            f"saída={format_value(trade['exit_time'])} @ {trade['exit_price']:.4f}"
+        )
+        print(
+            "  Candle que disparou a saída: "
+            f"{format_value(exit_signal_bar[time_col])}, "
+            f"close={exit_signal_bar['close']:.4f}, "
+            f"volume={exit_signal_bar['volume']:.2f}, "
+            f"vol_ratio={exit_signal_bar['vol_ratio']:.2f}"
+        )
 
 
 def save_trades(path: str | Path, trades: List[Trade]) -> None:
@@ -354,10 +440,15 @@ def main() -> None:
     """Ponto de entrada do CLI."""
     args = parse_args()
     cfg = build_config(args)
-    rows = load_csv(args.csv)
+    csv_path = Path(args.csv)
+    if not csv_path.exists():
+        raise SystemExit(f"CSV não encontrado: {csv_path}")
+    rows = load_csv(csv_path)
     bt = BubbleBacktester(cfg)
     trades = bt.run(rows, time_col=args.time_col)
     print_report(bt, trades)
+    if args.diagnose:
+        print_diagnostics(bt, args.time_col)
 
     if trades:
         save_trades(args.output, trades)
