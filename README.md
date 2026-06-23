@@ -1,32 +1,68 @@
-================================================================================
- ESTRATEGIA "BOLHA DE VOLUME" — Backtester
-================================================================================
-Analogia: o ativo se comporta como uma bolha de sabão.
-  - Volume de entrada crescente  -> a bolha "infla" (e o preco tende a subir
-    junto, em movimentos de pump impulsionados por volume anormal).
-  - Ao atingir o volume maximo, a bolha pode:
-        (a) estourar de repente (reversao violenta, vela vermelha forte) ou
-        (b) esvaziar aos poucos (volume voltando gradualmente ao normal,
-            preco perdendo forca).
-  - A estrategia tenta ENTRAR quando a bolha comeca a inflar (pico de volume
-    relativo + vela de alta) e SAIR antes que ela esvazie, usando uma
-    combinacao de: stop-loss fixo, stop movel (trailing) sobre o fechamento,
-    deteccao de "esvaziamento" de volume e um limite maximo de tempo em
-    posicao.
+# Estratégia "Bolha de Volume" — Backtester cripto
 
-Esse script foi calibrado e validado em cima do evento real do par
-AXSUSDT entre 2026-06-19 e 2026-06-20 (arquivo
-AXSUSDT_2026-06-19_2026-06-20_1h.csv), onde duas "bolhas" de volume
-ocorreram (~21h do dia 19 e ~21h do dia 20). Os parametros padrao abaixo
-reproduzem esse evento: o ciclo 1 e capturado quase por inteiro
-(~+23% liquido em 5 candles) e o ciclo 2 demonstra o controle de risco da
-estrategia (posicao protegida por stop, ainda aberta no fim dos dados).
+Este repositório contém um backtester Python para uma estratégia de trading cripto inspirada na analogia de uma **bolha de sabão**:
 
-IMPORTANTE SOBRE LOOKAHEAD / EXECUCAO REALISTA:
-  - Sinais (entrada, stop, trailing, decaimento de volume) sao sempre
-    avaliados no FECHAMENTO do candle ja concluido.
-  - A ordem (entrada/saida) e executada na ABERTURA do candle seguinte.
-  Isso evita "olhar o futuro" dentro do proprio candle de sinal e e o
-  comportamento que um bot real teria (ele so sabe que um candle fechou
-  depois que ele fecha).
-================================================================================
+- Volume de entrada crescente infla a bolha e costuma acompanhar movimentos de pump.
+- Depois do volume máximo, a bolha pode estourar rapidamente ou esvaziar de forma gradual.
+- A estratégia tenta entrar no início da inflação e sair antes do esvaziamento usando stop fixo, trailing stop, decaimento de volume e tempo máximo em posição.
+
+O script foi calibrado para o evento real de `AXSUSDT` entre `2026-06-19` e `2026-06-20`, disponível em `AXSUSDT_2026-06-19_2026-06-20_1h.csv`.
+
+## Sem lookahead
+
+A simulação evita olhar o futuro:
+
+1. Sinais de entrada e saída são avaliados apenas no **fechamento** do candle concluído.
+2. A ordem correspondente é executada na **abertura** do candle seguinte.
+
+Esse fluxo aproxima o comportamento de um bot real, que só conhece o candle depois de ele fechar.
+
+## Instalação
+
+O backtester usa apenas a biblioteca padrão do Python; não há dependências externas.
+
+## Uso rápido
+
+```bash
+python bubble_backtest.py
+```
+
+Por padrão, o script usa o CSV de AXSUSDT incluído no repositório e grava o log de operações em `bubble_backtest_trades.csv` quando houver trades fechados.
+
+## Exemplo com parâmetros
+
+```bash
+python bubble_backtest.py \
+  --csv AXSUSDT_2026-06-19_2026-06-20_1h.csv \
+  --vol-lookback 10 \
+  --vol-spike-mult 3.0 \
+  --hard-stop-pct 0.04 \
+  --trailing-stop-pct 0.05 \
+  --vol-decay-ratio 1.3 \
+  --max-hold-bars 8 \
+  --cooldown-bars 2 \
+  --fee-pct 0.001 \
+  --capital-inicial 1000 \
+  --position-size-pct 1.0
+```
+
+Use `--allow-red-signal` para permitir entradas em candles de sinal vermelhos. Sem essa opção, a entrada exige candle de alta (`close > open`).
+
+## Colunas esperadas no CSV
+
+O arquivo de entrada deve conter pelo menos:
+
+- `open_time_brasilia` — horário de abertura do candle, ou outra coluna informada via `--time-col`.
+- `open`, `high`, `low`, `close` — OHLC.
+- `volume` — volume negociado do candle.
+
+## Saídas do relatório
+
+O relatório impresso no terminal inclui:
+
+- Operações fechadas, com horário de entrada/saída, preços, retorno bruto/líquido e motivo da saída.
+- Resumo com número de trades, win rate, retorno total, capital final, drawdown máximo, profit factor e eventual posição ainda aberta marcada a mercado.
+
+## Aviso
+
+Este projeto é apenas educacional e não constitui recomendação financeira. Resultados passados e calibração em um evento específico não garantem desempenho futuro.
